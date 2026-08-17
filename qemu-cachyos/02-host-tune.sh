@@ -60,13 +60,20 @@ fi
 # ---------------------------------------------------------------------------
 info "Hugepages"
 mem_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
-default_vm_ram=$(( mem_gb / 2 ))
+
+# Leave the host at least 6 GiB. Derive the default from that constraint
+# rather than from a fixed fraction, or on a small machine the computed
+# default lands outside the range the guard below accepts.
+HOST_RESERVE_GB=6
+default_vm_ram=$(( mem_gb - HOST_RESERVE_GB ))
 (( default_vm_ram > 32 )) && default_vm_ram=32
-(( default_vm_ram < 8 )) && default_vm_ram=8
 VM_RAM_GB=${VM_RAM_GB:-$default_vm_ram}
 
-if (( VM_RAM_GB >= mem_gb - 6 )); then
-  die "VM_RAM_GB=$VM_RAM_GB leaves under 6 GiB for the host on a ${mem_gb} GiB machine."
+if (( VM_RAM_GB > mem_gb - 4 )); then
+  die "VM_RAM_GB=$VM_RAM_GB leaves under 4 GiB for the host on a ${mem_gb} GiB machine."
+fi
+if (( VM_RAM_GB < 4 )); then
+  die "VM_RAM_GB=$VM_RAM_GB is too small for a Windows guest."
 fi
 
 note "host RAM        : ${mem_gb} GiB"
@@ -74,13 +81,41 @@ note "reserving       : ${VM_RAM_GB} GiB as 1 GiB hugepages"
 note "left for host   : $(( mem_gb - VM_RAM_GB )) GiB"
 warn "Reserved hugepages are removed from general-purpose RAM at boot,"
 warn "whether or not the VM is running. Re-run with VM_RAM_GB=<n> to change."
-if confirm "Reserve ${VM_RAM_GB} GiB of 1 GiB hugepages?"; then
+
+# On a small-memory machine, permanently surrendering a third of RAM to a VM
+# that is off most of the time is a bad trade. Transparent hugepages give
+# most of the benefit with none of the reservation, so default to declining.
+hp_default_yes=1
+if (( mem_gb < 20 )); then
+  hr
+  warn "This machine has ${mem_gb} GiB. Reserving ${VM_RAM_GB} GiB at boot means the"
+  warn "host runs with $(( mem_gb - VM_RAM_GB )) GiB permanently — including when the VM is shut down."
+  note "On a machine this size the honest recommendation is to SKIP hugepages."
+  note "Transparent hugepages give you most of the TLB benefit automatically,"
+  note "with no fixed reservation. The measured difference for CAD workloads is"
+  note "small; the difference between 14 GiB and 6 GiB of usable desktop is not."
+  note "Answer 'n' below unless you have a specific reason."
+  hp_default_yes=0
+  hr
+fi
+
+if [[ $hp_default_yes == 0 ]] && [[ ${KIT_ASSUME_YES:-0} == 1 ]]; then
+  # Never auto-accept a reservation we just advised against.
+  note "Auto-mode with low RAM: skipping hugepages."
+  false
+elif confirm "Reserve ${VM_RAM_GB} GiB of 1 GiB hugepages?"; then
   params+=("default_hugepagesz=1G" "hugepagesz=1G" "hugepages=${VM_RAM_GB}")
   record "hugepages:${VM_RAM_GB}"
+  printf 'HUGEPAGES_GB=%s\n' "$VM_RAM_GB" | own_file "$STATE_DIR/hugepages.env"
   ok "queued ${VM_RAM_GB} x 1 GiB hugepages"
 else
-  note "Skipped. The VM will use transparent hugepages instead — still fine,"
-  note "just less deterministic. Remove <hugepages/> from the domain XML."
+  # 04 reads this and renders the domain WITHOUT a <hugepages/> element.
+  # Getting that wrong is not cosmetic: a domain demanding hugepages that
+  # were never reserved refuses to start.
+  printf 'HUGEPAGES_GB=0\n' | own_file "$STATE_DIR/hugepages.env"
+  note "Skipped. The guest will use transparent hugepages instead — still fine,"
+  note "just less deterministic. 04-create-windows-vm.sh will omit the"
+  note "<hugepages/> element automatically, so nothing else to change."
 fi
 
 # ---------------------------------------------------------------------------

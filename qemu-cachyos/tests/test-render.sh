@@ -41,6 +41,11 @@ cat >"$TMP/vcpupin" <<'EOF'
     <vcpupin vcpu='2' cpuset='9'/>
     <vcpupin vcpu='3' cpuset='25'/>
 EOF
+cat >"$TMP/hugepages" <<'EOF'
+    <hugepages>
+      <page size='1048576' unit='KiB'/>
+    </hugepages>
+EOF
 cat >"$TMP/hostdevs" <<'EOF'
     <hostdev mode='subsystem' type='pci' managed='yes'>
       <source>
@@ -64,7 +69,8 @@ python3 lib/render.py templates/windows-workstation.xml.in "$TMP/out.xml" \
   "WINDOWS_ISO=/var/lib/libvirt/images/Win11.iso" \
   "VIRTIO_ISO=/var/lib/libvirt/images/virtio-win.iso" \
   "MAC_ADDR=52:54:00:ab:cd:ef" "AUDIO_BACKEND=pipewire" "HV_VENDOR=AuthenticAMD" \
-  --file "VCPUPIN=$TMP/vcpupin" --file "HOSTDEVS=$TMP/hostdevs"
+  --file "VCPUPIN=$TMP/vcpupin" --file "HOSTDEVS=$TMP/hostdevs" \
+  --file "HUGEPAGES=$TMP/hugepages"
 check "render exits cleanly" "0" "$?"
 
 printf '\nStructure\n'
@@ -103,6 +109,24 @@ contains "stable MAC"                  "52:54:00:ab:cd:ef"
 contains "audio backend"               "type='pipewire'"
 check "two hostdevs present" "2" "$(grep -c "<hostdev " "$TMP/out.xml")"
 check "four vcpupin entries" "4" "$(grep -c "<vcpupin " "$TMP/out.xml")"
+
+printf '\nHugepages omitted (small-RAM host)\n'
+printf '%s\n' "    <!-- no hugepages reserved -->" >"$TMP/nohp"
+python3 lib/render.py templates/windows-workstation.xml.in "$TMP/nohp.xml" \
+  "VM_NAME=win-cad" "MEM_KIB=8388608" "VCPUS=8" "CORES=4" "THREADS=2" \
+  "HOUSEKEEPING=0,1" "OVMF_CODE=/x/OVMF_CODE.secboot.4m.fd" \
+  "OVMF_VARS=/x/OVMF_VARS.4m.fd" "SECURE=yes" "DISK_PATH=/x/d.raw" \
+  "DISK_FORMAT=raw" "WINDOWS_ISO=/x/w.iso" "VIRTIO_ISO=/x/v.iso" \
+  "MAC_ADDR=52:54:00:11:22:33" "AUDIO_BACKEND=pipewire" "HV_VENDOR=AuthenticAMD" \
+  --file "VCPUPIN=$TMP/vcpupin" --file "HOSTDEVS=$TMP/hostdevs" \
+  --file "HUGEPAGES=$TMP/nohp"
+check "renders without hugepages" "0" "$?"
+xmllint --noout "$TMP/nohp.xml" 2>/dev/null
+check "still well-formed XML" "0" "$?"
+check "no <hugepages> element" "0" "$(grep -c '<hugepages>' "$TMP/nohp.xml")"
+check "no 1GiB page element"  "0" "$(grep -c "1048576" "$TMP/nohp.xml")"
+check "memoryBacking kept"    "1" "$(grep -c '<memoryBacking>' "$TMP/nohp.xml")"
+check "locked/ kept for VFIO" "1" "$(grep -cx "    <locked/>" "$TMP/nohp.xml")"
 
 printf '\nFailure handling\n'
 python3 lib/render.py templates/windows-workstation.xml.in "$TMP/bad.xml" \

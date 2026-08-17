@@ -133,17 +133,36 @@ else
 fi
 
 
-# --- Hugepage sanity ------------------------------------------------------
-hp_free=$(awk '/HugePages_Free/ {print $2}' /proc/meminfo)
-hp_size=$(awk '/Hugepagesize/ {print $2}' /proc/meminfo)
-hp_free_gb=$(( hp_free * hp_size / 1024 / 1024 ))
-if (( hp_free_gb < VM_RAM_GB )); then
-  warn "Only ${hp_free_gb} GiB of hugepages are free but the VM wants ${VM_RAM_GB} GiB."
-  warn "The domain will fail to start. Either re-run 02-host-tune.sh with"
-  warn "VM_RAM_GB=${VM_RAM_GB} and reboot, or lower VM_RAM_GB here."
-  confirm "Generate the XML anyway?" || die "Aborted."
+# --- Hugepages ------------------------------------------------------------
+# 02-host-tune.sh records whether it reserved any. If it did not — the usual
+# outcome on a small-memory machine — the domain must not ask for them.
+HUGEPAGES_GB=""
+[[ -f $STATE_DIR/hugepages.env ]] && { . "$STATE_DIR/hugepages.env"; }
+
+if [[ -z $HUGEPAGES_GB ]]; then
+  # 02 was not run, or predates this marker. Fall back to what the host has.
+  hp_total=$(awk '/HugePages_Total/ {print $2}' /proc/meminfo)
+  HUGEPAGES_GB=$([[ ${hp_total:-0} -gt 0 ]] && echo 1 || echo 0)
+fi
+
+if [[ $HUGEPAGES_GB == 0 ]]; then
+  hugepages_xml="    <!-- no hugepages reserved on this host; using transparent hugepages -->"
+  ok "hugepages not in use — domain will rely on transparent hugepages"
 else
-  ok "${hp_free_gb} GiB of hugepages free, need ${VM_RAM_GB} GiB"
+  hugepages_xml="    <hugepages>
+      <page size='1048576' unit='KiB'/>
+    </hugepages>"
+  hp_free=$(awk '/HugePages_Free/ {print $2}' /proc/meminfo)
+  hp_size=$(awk '/Hugepagesize/ {print $2}' /proc/meminfo)
+  hp_free_gb=$(( hp_free * hp_size / 1024 / 1024 ))
+  if (( hp_free_gb < VM_RAM_GB )); then
+    warn "Only ${hp_free_gb} GiB of hugepages are free but the VM wants ${VM_RAM_GB} GiB."
+    warn "The domain will fail to start. Either re-run 02-host-tune.sh with"
+    warn "VM_RAM_GB=${VM_RAM_GB} and reboot, or lower VM_RAM_GB here."
+    confirm "Generate the XML anyway?" || die "Aborted."
+  else
+    ok "${hp_free_gb} GiB of hugepages free, need ${VM_RAM_GB} GiB"
+  fi
 fi
 
 # --- GPU hostdevs ---------------------------------------------------------
@@ -211,6 +230,7 @@ out="$STATE_DIR/${VM_NAME}.xml"
 template="$KIT_DIR/templates/windows-workstation.xml.in"
 [[ -f $template ]] || die "Template missing: $template"
 
+printf '%s\n' "$hugepages_xml" >"$STATE_DIR/.hugepages"
 printf '%s\n' "$vcpupin"  >"$STATE_DIR/.vcpupin"
 printf '%s\n' "$hostdevs" >"$STATE_DIR/.hostdevs"
 
@@ -233,11 +253,12 @@ python3 "$KIT_DIR/lib/render.py" "$template" "$out" \
   "MAC_ADDR=$mac" \
   "AUDIO_BACKEND=$audio" \
   "HV_VENDOR=AuthenticAMD" \
+  --file "HUGEPAGES=$STATE_DIR/.hugepages" \
   --file "VCPUPIN=$STATE_DIR/.vcpupin" \
   --file "HOSTDEVS=$STATE_DIR/.hostdevs" \
   || die "Template rendering failed; refusing to define an incomplete domain."
 
-rm -f "$STATE_DIR/.vcpupin" "$STATE_DIR/.hostdevs"
+rm -f "$STATE_DIR/.vcpupin" "$STATE_DIR/.hostdevs" "$STATE_DIR/.hugepages"
 ok "XML written to $out"
 
 # --- Validate and define --------------------------------------------------

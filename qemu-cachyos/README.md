@@ -213,7 +213,7 @@ simulated Ryzen and Threadripper topologies. No root, no KVM, no hardware:
 ./tests/run-all.sh
 ```
 
-74 assertions across three suites, covering 7950X, 7700X, Threadripper 7970X
+80 assertions across three suites, covering 7950X, 7700X, Threadripper 7970X
 and non-SMT layouts, plus the domain template's performance-critical elements
 and the hook's host/guest CPU split.
 

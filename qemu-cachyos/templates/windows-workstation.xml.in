@@ -23,10 +23,10 @@
 
   <memoryBacking>
     <!-- 1 GiB pages: fewer page-table levels to walk, far fewer TLB misses.
-         Matters most for MATLAB's large working sets. -->
-    <hugepages>
-      <page size='1048576' unit='KiB'/>
-    </hugepages>
+         Matters most for MATLAB's large working sets. Rendered empty when
+         02-host-tune.sh reserved none — a domain asking for hugepages the
+         host never reserved simply refuses to start. -->
+@HUGEPAGES@
     <!-- KSM page merging scans and dedupes guest memory. With one big VM it
          only burns host CPU, and it is a documented side-channel surface. -->
     <nosharepages/>
